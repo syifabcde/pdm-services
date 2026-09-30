@@ -115,6 +115,8 @@ def notify_if_new_trigger(iddev, sensor, subtype, created_at, current_value, ban
     Never raises: notify.send_telegram() is itself best-effort, and an sqlite hiccup here is left
     unguarded on purpose (same reasoning as band_drift_watch.update_drift_state_and_notify) --
     silently losing this state would mean the next check re-treats an ongoing episode as new.
+    The episode is only marked notified once send_telegram() reports success; a failed send returns
+    None and is retried on the next check (every cadence tick while the trigger persists).
     """
     now = pd.Timestamp.now() if now is None else now
     now_iso = now.isoformat()
@@ -134,7 +136,10 @@ def notify_if_new_trigger(iddev, sensor, subtype, created_at, current_value, ban
             return None
 
         message = _format_message(sensor, subtype, created_at, current_value, band_progress, smooth, building, cell)
-        notify.send_telegram(message, parse_mode="Markdown")
+        if not notify.send_telegram(message, parse_mode="Markdown"):
+            # not delivered: leave the episode un-notified so the next check retries it, instead of
+            # silently swallowing the alert until the sensor clears and re-triggers
+            return None
 
         if row is None:
             conn.execute(

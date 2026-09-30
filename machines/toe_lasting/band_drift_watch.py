@@ -208,8 +208,9 @@ def update_drift_state_and_notify(iddev, result, sensor, building, cell, now=Non
     """Persists `result` (from check_band_drift) and sends exactly ONE Telegram
     message per drift EPISODE -- when `drifted` flips False->True (not on every check
     while it stays True) and once more when it clears True->False. Returns the message
-    actually sent, or None if nothing was sent this call. Never raises: a notification
-    failure is swallowed inside notify.send_telegram, and this function's own sqlite
+    actually sent, or None if nothing was sent this call. A transition whose Telegram send
+    fails is NOT persisted (None is returned) so the next check retries it. Never raises: a
+    notification failure is swallowed inside notify.send_telegram, and this function's own sqlite
     write is the caller's problem only if it also wants that to be fatal (it isn't
     wrapped here because unlike a notification, silently losing the local state IS worth
     surfacing -- it would otherwise mean every future check re-detects "just started").
@@ -241,7 +242,15 @@ def update_drift_state_and_notify(iddev, result, sensor, building, cell, now=Non
         # else: no state transition -- still drifted or still fine, don't re-notify
 
         if message is not None:
-            notify.send_telegram(message)
+            if not notify.send_telegram(message):
+                # not delivered: keep the previous drifted/first_detected_at so the same transition is
+                # detected again on the next check and retried, instead of being lost for good
+                if row is not None:
+                    conn.execute(
+                        "UPDATE band_drift_state SET last_checked_at=? WHERE iddev=? AND sensor=?",
+                        (now_iso, iddev, sensor),
+                    )
+                return None
             notified_at = now_iso
 
         if row is None:
