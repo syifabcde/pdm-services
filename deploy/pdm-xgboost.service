@@ -8,6 +8,8 @@ Type=simple
 User=pdm
 Group=pdm
 WorkingDirectory=/opt/pdm-xgboost/pdm-services
+# without this, print() warnings (e.g. notify.send_telegram failures) sit in a buffer and never reach journalctl
+Environment=PYTHONUNBUFFERED=1
 # .env is loaded by core.settings (dotenv); single worker on purpose -- state/*.sqlite dedups alerts
 ExecStart=/opt/pdm-xgboost/pdm-services/venv/bin/uvicorn api:app --host 127.0.0.1 --port 8000
 Restart=always
