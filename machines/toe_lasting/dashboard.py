@@ -54,24 +54,27 @@ def render_drift_banner(iddev):
         return  # a drift-check hiccup should never take down the rest of the page
     if raw.empty:
         return
-    result = band_drift_watch.check_temperature_drift(raw, iddev)
-    try:
-        # cheap + idempotent (only sends a Telegram message on a drifted<->ok transition) --
-        # safe to call every rerun even though _fetch_for_drift_check's underlying data is
-        # only an hour fresh at most.
-        building, cell = db.fetch_device_location(get_engine(), iddev)
-        band_drift_watch.update_drift_state_and_notify(iddev, result, building=building, cell=cell)
-    except Exception:
-        pass  # persistence/notify hiccup should never block the banner itself from showing
-    if result["drifted"]:
-        st.error(
-            f"⚠️ Suhu iddev{iddev} kemungkinan sudah bergeser dari band yang dikonfigurasi di "
-            f"config/bands.toml: **{result['frac_not_normal']:.0%}** dari bacaan on-time "
-            f"{band_drift_watch.LOOKBACK_DAYS} hari terakhir ({result['n_on_readings']} bacaan) "
-            f"di luar tier 'normal' (median suhu saat ini ≈ {result['current_median']:.1f}°C). "
-            "Kemungkinan recipe/setpoint berubah -- konfirmasi ke engineering sebelum mengubah "
-            "band secara manual. RUL di bawah ini masih memakai band lama sampai dikonfirmasi."
-        )
+    for sensor in band_drift_watch.SENSORS:
+        result = band_drift_watch.check_band_drift(raw, iddev, sensor)
+        try:
+            # cheap + idempotent (only sends a Telegram message on a drifted<->ok transition) --
+            # safe to call every rerun even though _fetch_for_drift_check's underlying data is
+            # only an hour fresh at most.
+            building, cell = db.fetch_device_location(get_engine(), iddev)
+            band_drift_watch.update_drift_state_and_notify(iddev, result, sensor=sensor, building=building, cell=cell)
+        except Exception:
+            pass  # persistence/notify hiccup should never block the banner itself from showing
+        if result["drifted"]:
+            label = band_drift_watch.SENSOR_LABEL[sensor]
+            unit = band_drift_watch.UNITS[sensor]
+            st.error(
+                f"⚠️ {label} iddev{iddev} kemungkinan sudah bergeser dari band yang dikonfigurasi di "
+                f"config/bands.toml: **{result['frac_not_normal']:.0%}** dari bacaan on-time "
+                f"{band_drift_watch.LOOKBACK_DAYS} hari terakhir ({result['n_on_readings']} bacaan) "
+                f"di luar tier 'normal' (median {label.lower()} saat ini ≈ {result['current_median']:.2f}{unit}). "
+                "Kemungkinan recipe/setpoint berubah -- konfirmasi ke engineering sebelum mengubah "
+                "band secara manual. RUL di bawah ini masih memakai band lama sampai dikonfirmasi."
+            )
 
 
 def fmt_age(minutes):

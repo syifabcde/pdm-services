@@ -136,11 +136,11 @@ PART_NAMES = {
 # only (dashboard.py's subtype legend), see toe-lasting/config/
 # injection_parameters.csv for the full pattern_shape/confidence notes.
 FAILURE_DESCRIPTIONS = {
-    ("vibration", "bearing_seizure"): "bearing aus bertahap lalu macet",
-    ("vibration", "motor_winding_failure"): "motor terbakar (winding)",
-    ("temperature", "heater_burnout"): "heater terbakar akibat korslet",
-    ("temperature", "thermocouple_failure"): "thermocouple gagal memanas",
-    ("pressure", "pump_failure"): "pompa terbakar, tekanan tidak stabil",
+    ("vibration", "bearing_seizure"): "Bearing aus bertahap lalu macet",
+    ("vibration", "motor_winding_failure"): "Motor terbakar (winding)",
+    ("temperature", "heater_burnout"): "Heater terbakar akibat korslet",
+    ("temperature", "thermocouple_failure"): "Thermocouple gagal memanas",
+    ("pressure", "pump_failure"): "Pompa terbakar sehingga tekanan tidak stabil",
 }
 
 # categories the pooled model (xgb_pooled_v2.joblib) was trained with -- used

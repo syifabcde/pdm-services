@@ -41,9 +41,20 @@ from . import config
 from .rul_bands import LABEL_FN, get_bands
 from .rul_features import PRESSURE_OFF_THRESHOLD, VIBRATION_OFF_THRESHOLD
 
+SENSORS = ("temperature", "vibration", "pressure")
 LOOKBACK_DAYS = 3
 MIN_ON_READINGS = 20        # below this, there's not enough recent on-time data to judge either way
-DRIFT_FRACTION_THRESHOLD = 0.30   # healthy real history sits <10%; the one real drift case sits at 77%
+# Per-sensor fraction of on-readings outside the 'normal' tier that counts as drift. Temperature's
+# 30% is calibrated (healthy real history <10%, the one real drift case 77%). Backtested
+# 2026-09-30 on rolling 3-day windows of iddev1/iddev2 cleaned history: healthy vibration
+# stays <=1% (30% is fine), healthy pressure runs up to 25% (iddev1 median 16%), so it gets a
+# higher 40% to keep margin. Neither has a real drift case on record to validate detection
+# against -- only iddev3/4's known band mismatch (vibration 40-94%, pressure iddev3 100%).
+DRIFT_FRACTION_THRESHOLD = {"temperature": 0.30, "vibration": 0.30, "pressure": 0.40}
+
+# display unit + label per sensor (units match rul_notify.UNITS)
+UNITS = {"temperature": "°C", "vibration": "mm/s", "pressure": "kg/cm²"}
+SENSOR_LABEL = {"temperature": "Suhu", "vibration": "Vibrasi", "pressure": "Tekanan"}
 
 # raw DB reads have NO cleaning applied (db.fetch_recent() is a plain passthrough, unlike
 # toe-lasting/pipeline/clean_log.py's implausible-row filter on the training side) -- found live
@@ -52,36 +63,41 @@ DRIFT_FRACTION_THRESHOLD = 0.30   # healthy real history sits <10%; the one real
 # 700 is comfortably above both devices' 'danger'-band sampling ceiling (critical*1.5 = 600, see
 # inject_failures.band_bounds()) and comfortably below the observed glitch values.
 IMPLAUSIBLE_TEMP_MAX = 700
+# Only temperature has a known glitch ceiling so far; vibration/pressure get no upper filter
+# (the label functions already map NaN/0 to 'off').
+IMPLAUSIBLE_MAX = {"temperature": IMPLAUSIBLE_TEMP_MAX}
 
 
-def check_temperature_drift(raw, iddev, now=None):
+def check_band_drift(raw, iddev, sensor, now=None):
     """raw: recent rows for ONE device (db.fetch_recent/fetch_range), covering at
     least LOOKBACK_DAYS -- caller's responsibility, this function doesn't fetch.
+    sensor: one of SENSORS -- which sensor's band to check.
 
     Returns a dict, never raises:
-        drifted            bool -- True if this device's real temperature looks like
-                                    it's settled on a different regime than bands.toml
-                                    assumes
+        drifted            bool -- True if this sensor's real values look like they've
+                                    settled on a different regime than bands.toml assumes
         frac_not_normal    float or None -- fraction of recent on-readings outside the
                                     'normal' tier (None if not enough data)
         n_on_readings       int
-        current_median      float or None -- recent on-time temperature median, for
+        current_median      float or None -- recent on-time median of this sensor, for
                                     display (what a human would compare against
-                                    bands.toml's standby/normal when deciding a new value)
+                                    bands.toml's tiers when deciding a new value)
         reason              str -- human-readable, for display when not drifted
     """
     now = pd.Timestamp.now() if now is None else now
     cutoff = now - pd.Timedelta(days=LOOKBACK_DAYS)
     recent = raw[raw["created_at"] >= cutoff]
 
-    recent = recent[recent["temperature"] <= IMPLAUSIBLE_TEMP_MAX]
+    max_ok = IMPLAUSIBLE_MAX.get(sensor)
+    if max_ok is not None:
+        recent = recent[recent[sensor] <= max_ok]
     is_off = (recent["vibration"].fillna(0) < VIBRATION_OFF_THRESHOLD) & (recent["pressure"].fillna(0) < PRESSURE_OFF_THRESHOLD)
     on = recent.loc[~is_off]
     if len(on) < MIN_ON_READINGS:
         return {"drifted": False, "frac_not_normal": None, "n_on_readings": len(on),
                 "current_median": None, "reason": "belum cukup data on-time beberapa hari terakhir"}
 
-    status = pd.Series(LABEL_FN["temperature"](on["temperature"].values, iddev), index=on.index)
+    status = pd.Series(LABEL_FN[sensor](on[sensor].values, iddev), index=on.index)
     valid = status[status != "off"]
     if len(valid) < MIN_ON_READINGS:
         return {"drifted": False, "frac_not_normal": None, "n_on_readings": len(valid),
@@ -89,12 +105,13 @@ def check_temperature_drift(raw, iddev, now=None):
 
     frac_not_normal = float((valid != "normal").mean())
     return {
-        "drifted": frac_not_normal >= DRIFT_FRACTION_THRESHOLD,
+        "drifted": frac_not_normal >= DRIFT_FRACTION_THRESHOLD[sensor],
         "frac_not_normal": frac_not_normal,
         "n_on_readings": int(len(valid)),
-        "current_median": float(on.loc[valid.index, "temperature"].median()),
+        "current_median": float(on.loc[valid.index, sensor].median()),
         "reason": "ok",
     }
+
 
 
 # ============================================================================
@@ -129,24 +146,38 @@ def connect():
         conn.close()
 
 
-def suggest_shifted_bands(iddev, current_median):
+# Each sensor's ladder, and the two tiers bounding its 'normal' band (whose center the shift
+# anchors on). Temperature/vibration rise standby<normal<warning<critical, 'normal' = (standby,
+# normal]. Pressure falls critical<warning<normal with no standby, 'normal' = (warning, normal].
+_TIERS = {
+    "temperature": (("standby", "normal", "warning", "critical"), ("standby", "normal")),
+    "vibration": (("standby", "normal", "warning", "critical"), ("standby", "normal")),
+    "pressure": (("critical", "warning", "normal"), ("warning", "normal")),
+}
+
+
+def suggest_shifted_bands(iddev, current_median, sensor):
     """Naive heuristic ONLY, for the drift alert text -- NOT a calibrated replacement for
-    bands.toml. Shifts every temperature tier (standby/normal/warning/critical) by the same
-    delta, so the new median sits where the old median used to sit relative to the band (the
-    center of the old standby-normal range) -- preserves each tier's width, just recenters the
-    whole ladder. The real calibration (see bands.toml's own header) uses actual healthy-history
-    percentiles over a real window, not a single current median, so this is only ever a rough
-    starting point for engineering to sanity-check, never auto-applied."""
-    bands = get_bands(iddev)["temperature"]
-    center = (bands["standby"] + bands["normal"]) / 2
+    bands.toml. Shifts every tier of `sensor`'s ladder by the same delta, so the new median
+    sits where the old median used to sit relative to the band (the center of the old 'normal'
+    tier) -- preserves each tier's width, just recenters the whole ladder. The real calibration
+    (see bands.toml's own header) uses actual healthy-history percentiles over a real window,
+    not a single current median, so this is only ever a rough starting point for engineering
+    to sanity-check, never auto-applied."""
+    bands = get_bands(iddev)[sensor]
+    tiers, (lo, hi) = _TIERS[sensor]
+    center = (bands[lo] + bands[hi]) / 2
     delta = current_median - center
-    return {tier: bands[tier] + delta for tier in ("standby", "normal", "warning", "critical")}
+    return {tier: bands[tier] + delta for tier in tiers}
 
 
-def _format_message(iddev, result, sensor="temperature", building=None, cell=None):
+def _format_message(iddev, result, sensor, building, cell):
     # Plain text -- notify.send_telegram() sends with no parse_mode (see its docstring),
     # so no *bold*/_italic_ markup here; it would just show up as literal asterisks/underscores.
-    s = suggest_shifted_bands(iddev, result["current_median"])
+    s = suggest_shifted_bands(iddev, result["current_median"], sensor)
+    label, unit = SENSOR_LABEL[sensor], UNITS[sensor]
+    dec = 2 if sensor == "vibration" else 0
+    tiers = "\n".join(f"• {tier} ≈ {v:.{dec}f}" for tier, v in s.items())
     return (
         f"⚠️ PDM WARNING — PERGESERAN THRESHOLD\n\n"
         f"• Gedung {building or 'N/A'}\n"
@@ -157,14 +188,11 @@ def _format_message(iddev, result, sensor="temperature", building=None, cell=Non
         f"• Bacaan di luar normal : {result['frac_not_normal']:.0%}\n"
         f"• Total bacaan : {result['n_on_readings']}\n"
         f"• Periode pemantauan : {LOOKBACK_DAYS} hari terakhir\n"
-        f"• Median suhu saat ini : {result['current_median']:.1f}°C\n\n"
+        f"• Median {label.lower()} saat ini : {result['current_median']:.{max(dec, 1)}f}{unit}\n\n"
         f"⚠️ INDIKASI\n"
-        f"Suhu terindikasi bergeser dari threshold yang dikonfigurasi di config/bands.toml.\n\n"
-        f"💡 USULAN GESER THRESHOLD (KASAR, bukan final)\n"
-        f"• standby ≈ {s['standby']:.0f}\n"
-        f"• normal ≈ {s['normal']:.0f}\n"
-        f"• warning ≈ {s['warning']:.0f}\n"
-        f"• critical ≈ {s['critical']:.0f}\n\n"
+        f"{label} terindikasi bergeser dari threshold yang dikonfigurasi.\n\n"
+        f"💡 REKOMENDASI GESER THRESHOLD\n"
+        f"{tiers}\n\n"
         f"🛠️ TINDAKAN\n"
         f"Konfirmasi usulan di atas ke tim Engineering sebelum mengubah threshold secara manual.\n\n"
         f"ℹ️ CATATAN\n"
@@ -172,12 +200,12 @@ def _format_message(iddev, result, sensor="temperature", building=None, cell=Non
     )
 
 
-def _format_clear_message(iddev):
-    return f"✅ iddev{iddev}: suhu sudah kembali sesuai band yang dikonfigurasi."
+def _format_clear_message(iddev, sensor):
+    return f"✅ iddev{iddev}: {SENSOR_LABEL[sensor].lower()} sudah kembali sesuai band yang dikonfigurasi."
 
 
-def update_drift_state_and_notify(iddev, result, sensor="temperature", building=None, cell=None, now=None):
-    """Persists `result` (from check_temperature_drift) and sends exactly ONE Telegram
+def update_drift_state_and_notify(iddev, result, sensor, building, cell, now=None):
+    """Persists `result` (from check_band_drift) and sends exactly ONE Telegram
     message per drift EPISODE -- when `drifted` flips False->True (not on every check
     while it stays True) and once more when it clears True->False. Returns the message
     actually sent, or None if nothing was sent this call. Never raises: a notification
@@ -187,7 +215,8 @@ def update_drift_state_and_notify(iddev, result, sensor="temperature", building=
     surfacing -- it would otherwise mean every future check re-detects "just started").
 
     `building`/`cell`: passed straight through to _format_message (see machines.toe_lasting.db.
-    fetch_device_location) -- optional, shown as "N/A" when missing.
+    fetch_device_location: dev_building_code and the number in dev_name from pdm_tl_device) --
+    required; _format_message still shows "N/A" if the DB itself returns None for either.
     """
     now = pd.Timestamp.now() if now is None else now
     now_iso = now.isoformat()
@@ -208,7 +237,7 @@ def update_drift_state_and_notify(iddev, result, sensor="temperature", building=
             message = _format_message(iddev, result, sensor=sensor, building=building, cell=cell)
         elif not now_drifted and was_drifted:
             first_detected_at = None
-            message = _format_clear_message(iddev)
+            message = _format_clear_message(iddev, sensor)
         # else: no state transition -- still drifted or still fine, don't re-notify
 
         if message is not None:
