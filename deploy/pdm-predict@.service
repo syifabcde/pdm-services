@@ -1,0 +1,7 @@
+[Unit]
+Description=PDM RUL predict + alert check for iddev%i
+After=pdm-xgboost.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/curl -fsS --max-time 60 -o /dev/null http://127.0.0.1:8000/predict/%i

@@ -1,0 +1,17 @@
+[Unit]
+Description=PDM XGBoost RUL API
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pdm
+Group=pdm
+WorkingDirectory=/opt/pdm-xgboost/pdm-services
+# .env is loaded by core.settings (dotenv); single worker on purpose -- state/*.sqlite dedups alerts
+ExecStart=/opt/pdm-xgboost/pdm-services/venv/bin/uvicorn api:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

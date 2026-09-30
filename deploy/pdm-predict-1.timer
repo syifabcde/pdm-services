@@ -1,0 +1,11 @@
+[Unit]
+Description=Run RUL predict for iddev1 every 300 s
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=300
+AccuracySec=5s
+Unit=pdm-predict@1.service
+
+[Install]
+WantedBy=timers.target
