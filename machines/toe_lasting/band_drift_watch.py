@@ -38,7 +38,7 @@ import pandas as pd
 from core import notify
 
 from . import config
-from .rul_bands import LABEL_FN
+from .rul_bands import LABEL_FN, get_bands
 from .rul_features import PRESSURE_OFF_THRESHOLD, VIBRATION_OFF_THRESHOLD
 
 LOOKBACK_DAYS = 3
@@ -129,17 +129,43 @@ def connect():
         conn.close()
 
 
+def suggest_shifted_bands(iddev, current_median):
+    """Naive heuristic ONLY, for the drift alert text -- NOT a calibrated replacement for
+    bands.toml. Shifts every temperature tier (standby/normal/warning/critical) by the same
+    delta, so the new median sits where the old median used to sit relative to the band (the
+    center of the old standby-normal range) -- preserves each tier's width, just recenters the
+    whole ladder. The real calibration (see bands.toml's own header) uses actual healthy-history
+    percentiles over a real window, not a single current median, so this is only ever a rough
+    starting point for engineering to sanity-check, never auto-applied."""
+    bands = get_bands(iddev)["temperature"]
+    center = (bands["standby"] + bands["normal"]) / 2
+    delta = current_median - center
+    return {tier: bands[tier] + delta for tier in ("standby", "normal", "warning", "critical")}
+
+
 def _format_message(iddev, result):
     # Plain text -- notify.send_telegram() sends with no parse_mode (see its docstring),
     # so no *bold*/_italic_ markup here; it would just show up as literal asterisks/underscores.
+    s = suggest_shifted_bands(iddev, result["current_median"])
     return (
-        f"⚠️ iddev{iddev}: suhu kemungkinan sudah bergeser dari band yang "
-        f"dikonfigurasi di config/bands.toml.\n"
-        f"{result['frac_not_normal']:.0%} dari {result['n_on_readings']} bacaan on-time "
-        f"{LOOKBACK_DAYS} hari terakhir di luar tier 'normal' "
-        f"(median suhu saat ini ≈ {result['current_median']:.1f}°C).\n"
-        f"Konfirmasi ke engineering sebelum mengubah band secara manual -- RUL masih "
-        f"memakai band lama sampai dikonfirmasi."
+        f"⚠️ PDM WARNING — PERGESERAN THRESHOLD\n\n"
+        f"🏭 Device : {iddev}\n\n"
+        f"📊 TEMUAN\n"
+        f"• Bacaan di luar normal : {result['frac_not_normal']:.0%}\n"
+        f"• Total bacaan : {result['n_on_readings']}\n"
+        f"• Periode pemantauan : {LOOKBACK_DAYS} hari terakhir\n"
+        f"• Median suhu saat ini : {result['current_median']:.1f}°C\n\n"
+        f"⚠️ INDIKASI\n"
+        f"Suhu terindikasi bergeser dari threshold yang dikonfigurasi di config/bands.toml.\n\n"
+        f"💡 USULAN GESER THRESHOLD (KASAR, bukan final)\n"
+        f"• standby ≈ {s['standby']:.0f}\n"
+        f"• normal ≈ {s['normal']:.0f}\n"
+        f"• warning ≈ {s['warning']:.0f}\n"
+        f"• critical ≈ {s['critical']:.0f}\n\n"
+        f"🛠️ TINDAKAN\n"
+        f"Konfirmasi usulan di atas ke tim Engineering sebelum mengubah threshold secara manual.\n\n"
+        f"ℹ️ CATATAN\n"
+        f"PDM masih menggunakan threshold lama sampai konfigurasi dikonfirmasi."
     )
 
 
