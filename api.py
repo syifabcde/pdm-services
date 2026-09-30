@@ -20,10 +20,12 @@ Then in another terminal (or a browser):
 On the IoT server this same file runs under systemd, bound to 127.0.0.1 only --
 see deploy notes (not written yet, comes after this is validated locally).
 """
+import math
+
 from fastapi import FastAPI, HTTPException
 
 from core import db
-from machines.toe_lasting import db as tl_db
+from machines.toe_lasting import band_drift_watch, config as tl_config, db as tl_db
 from machines.toe_lasting.rul_predict import load_models, score_and_notify
 
 app = FastAPI(title="PDM XGBoost RUL service")
@@ -74,3 +76,33 @@ def predict(iddev: int):
     building, cell = tl_db.fetch_device_location(_engine, iddev)
     results = score_and_notify(raw, iddev, bundles, building=building, cell=cell)
     return {"iddev": iddev, "results": _serialize(results)}
+
+
+@app.get("/drift/{iddev}")
+def drift(iddev: int, notify: bool = True):
+    """Advisory band-drift check (band_drift_watch) for every sensor of one device -- what the
+    dashboard's render_drift_banner does, but callable without anyone opening the dashboard.
+    Sends at most ONE Telegram message per sensor per drift episode (see
+    band_drift_watch.update_drift_state_and_notify), so it's safe to call as often as you like;
+    hourly is plenty since the check looks at LOOKBACK_DAYS of history. notify=false is a dry
+    run: returns the result without touching drift state or Telegram."""
+    try:
+        cadence_s = tl_config.device(iddev)["cadence_s"]
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"iddev{iddev} tidak ada di devices.toml")
+
+    limit = math.ceil(band_drift_watch.LOOKBACK_DAYS * 24 * 60 / (cadence_s / 60))
+    raw = tl_db.fetch_recent(_engine, iddev, limit=limit)
+    if raw.empty:
+        return {"iddev": iddev, "sensors": {}}
+
+    building, cell = tl_db.fetch_device_location(_engine, iddev)
+    sensors = {}
+    for sensor in band_drift_watch.SENSORS:
+        result = band_drift_watch.check_band_drift(raw, iddev, sensor)
+        message = None
+        if notify:
+            message = band_drift_watch.update_drift_state_and_notify(
+                iddev, result, sensor, building=building, cell=cell)
+        sensors[sensor] = {**result, "notified": message is not None}
+    return {"iddev": iddev, "sensors": sensors}
