@@ -1,5 +1,5 @@
 pandas
-scikit-learn==1.8.0
+scikit-learn
 joblib
 python-dotenv
 sqlalchemy
