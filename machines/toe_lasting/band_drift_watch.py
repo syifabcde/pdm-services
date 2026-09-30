@@ -143,13 +143,16 @@ def suggest_shifted_bands(iddev, current_median):
     return {tier: bands[tier] + delta for tier in ("standby", "normal", "warning", "critical")}
 
 
-def _format_message(iddev, result):
+def _format_message(iddev, result, sensor="temperature", building=None, cell=None):
     # Plain text -- notify.send_telegram() sends with no parse_mode (see its docstring),
     # so no *bold*/_italic_ markup here; it would just show up as literal asterisks/underscores.
     s = suggest_shifted_bands(iddev, result["current_median"])
     return (
         f"⚠️ PDM WARNING — PERGESERAN THRESHOLD\n\n"
-        f"🏭 Device : {iddev}\n\n"
+        f"• Gedung {building or 'N/A'}\n"
+        f"• Cell {cell or 'N/A'}\n"
+        f"• Mesin {config.LABEL}\n"
+        f"• Sensor {sensor}\n\n"
         f"📊 TEMUAN\n"
         f"• Bacaan di luar normal : {result['frac_not_normal']:.0%}\n"
         f"• Total bacaan : {result['n_on_readings']}\n"
@@ -173,7 +176,7 @@ def _format_clear_message(iddev):
     return f"✅ iddev{iddev}: suhu sudah kembali sesuai band yang dikonfigurasi."
 
 
-def update_drift_state_and_notify(iddev, result, sensor="temperature", now=None):
+def update_drift_state_and_notify(iddev, result, sensor="temperature", building=None, cell=None, now=None):
     """Persists `result` (from check_temperature_drift) and sends exactly ONE Telegram
     message per drift EPISODE -- when `drifted` flips False->True (not on every check
     while it stays True) and once more when it clears True->False. Returns the message
@@ -182,6 +185,9 @@ def update_drift_state_and_notify(iddev, result, sensor="temperature", now=None)
     write is the caller's problem only if it also wants that to be fatal (it isn't
     wrapped here because unlike a notification, silently losing the local state IS worth
     surfacing -- it would otherwise mean every future check re-detects "just started").
+
+    `building`/`cell`: passed straight through to _format_message (see machines.toe_lasting.db.
+    fetch_device_location) -- optional, shown as "N/A" when missing.
     """
     now = pd.Timestamp.now() if now is None else now
     now_iso = now.isoformat()
@@ -199,7 +205,7 @@ def update_drift_state_and_notify(iddev, result, sensor="temperature", now=None)
         notified_at = None
         if now_drifted and not was_drifted:
             first_detected_at = now_iso
-            message = _format_message(iddev, result)
+            message = _format_message(iddev, result, sensor=sensor, building=building, cell=cell)
         elif not now_drifted and was_drifted:
             first_detected_at = None
             message = _format_clear_message(iddev)

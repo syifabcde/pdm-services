@@ -59,7 +59,8 @@ def render_drift_banner(iddev):
         # cheap + idempotent (only sends a Telegram message on a drifted<->ok transition) --
         # safe to call every rerun even though _fetch_for_drift_check's underlying data is
         # only an hour fresh at most.
-        band_drift_watch.update_drift_state_and_notify(iddev, result)
+        building, cell = db.fetch_device_location(get_engine(), iddev)
+        band_drift_watch.update_drift_state_and_notify(iddev, result, building=building, cell=cell)
     except Exception:
         pass  # persistence/notify hiccup should never block the banner itself from showing
     if result["drifted"]:

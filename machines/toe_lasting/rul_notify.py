@@ -85,7 +85,7 @@ def _format_message(sensor, subtype, created_at, current_value, band_progress, s
         f"🚨 *PDM ALERT* 🚨\n"
         f"• Gedung `{building or 'N/A'}`\n"
         f"• Cell `{cell or 'N/A'}`\n"
-        f"• Machine `{config.LABEL}`\n"
+        f"• Mesin `{config.LABEL}`\n"
         f"• Sensor `{sensor}`\n\n"
         f"⚠️ *INDIKASI*\n"
         f"{desc}\n\n"
