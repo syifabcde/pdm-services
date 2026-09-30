@@ -87,7 +87,9 @@ def fmt_time(ts, ref):
 
 
 def render_status_cards(raw, iddev, bundles):
-    results = {(r["sensor"], r["subtype"]): r for r in score_and_notify(raw, iddev, bundles)}
+    building, cell = db.fetch_device_location(get_engine(), iddev)
+    results = {(r["sensor"], r["subtype"]): r
+               for r in score_and_notify(raw, iddev, bundles, building=building, cell=cell)}
 
     # CARD_COLUMNS cards per row; the last row simply has empty slots left over
     n_rows = math.ceil(len(rul_features.SUBTYPES) / CARD_COLUMNS)

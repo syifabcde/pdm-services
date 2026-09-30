@@ -71,5 +71,6 @@ def predict(iddev: int):
     if raw.empty:
         return {"iddev": iddev, "results": []}
 
-    results = score_and_notify(raw, iddev, bundles)
+    building, cell = tl_db.fetch_device_location(_engine, iddev)
+    results = score_and_notify(raw, iddev, bundles, building=building, cell=cell)
     return {"iddev": iddev, "results": _serialize(results)}
