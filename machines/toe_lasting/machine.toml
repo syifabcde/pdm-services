@@ -1,0 +1,14 @@
+# Toe-lasting: the machine-specific configuration the shared dashboard reads.
+# (Credentials live in pdm-services/.env; which device is shown is chosen in the UI.)
+
+label = "Toe-Lasting"
+data_dir = "toe-lasting"          # folder at the repo root holding this machine's config/ and models/
+db_table = "pdm_tl_log"
+db_columns = ["id", "temperature", "vibration", "pressure", "created_at", "iddev"]
+
+# Devices offered in the UI. Only iddev1 and iddev2 have calibrated bands
+# (toe-lasting/config/bands.toml) and an RUL model; add another only once it has both.
+devices = [1, 2]
+
+# Polling cadence, session break, trigger count and rolling windows are per device: see
+# toe-lasting/config/devices.toml (shared with the training pipeline).

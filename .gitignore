@@ -1,0 +1,11 @@
+# environment & secrets (.env.example stays tracked)
+venv/
+.env
+
+# runtime state written by pdm-services
+state/
+*.sqlite
+
+# python
+__pycache__/
+*.pyc

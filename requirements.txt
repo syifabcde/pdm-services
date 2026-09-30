@@ -1,0 +1,11 @@
+pandas
+scikit-learn==1.8.0
+joblib
+python-dotenv
+sqlalchemy
+psycopg2-binary
+streamlit
+xgboost
+requests
+fastapi
+uvicorn
