@@ -21,11 +21,15 @@ On the IoT server this same file runs under systemd, bound to 127.0.0.1 only --
 see deploy notes (not written yet, comes after this is validated locally).
 """
 import math
+from datetime import datetime
+from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+import pandas as pd
+from fastapi import FastAPI, HTTPException, Query
 
 from core import db
-from machines.toe_lasting import band_drift_watch, config as tl_config, db as tl_db
+from machines.toe_lasting import band_drift_watch, config as tl_config, db as tl_db, rul_smooth, rul_store
+from machines.toe_lasting.rul_features import SUBTYPES
 from machines.toe_lasting.rul_predict import load_models, score_and_notify
 
 app = FastAPI(title="PDM XGBoost RUL service")
@@ -76,6 +80,77 @@ def predict(iddev: int):
     building, cell = tl_db.fetch_device_location(_engine, iddev)
     results = score_and_notify(raw, iddev, bundles, building=building, cell=cell)
     return {"iddev": iddev, "results": _serialize(results)}
+
+
+ACTIVE_CADENCES = 2  # a logged prediction counts as "still triggered" while newer than this many cadences
+
+
+def _clean(value):
+    """JSON-safe scalar: Timestamp -> ISO string, NaN/NaT -> None, numpy numbers -> python."""
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    return value.item() if hasattr(value, "item") else value
+
+
+def _device_or_404(iddev):
+    try:
+        return tl_config.device(iddev)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"iddev{iddev} tidak ada di devices.toml")
+
+
+@app.get("/rul/{iddev}/latest")
+def rul_latest(iddev: int):
+    """Read-only: newest smoothed RUL per (sensor, subtype), straight from rul_predictions.sqlite.
+    Unlike /predict this does NOT score, log or send Telegram -- the pdm-predict@ timers stay the only
+    writer. rul_smooth recomputes the displayed RUL/ETA from the logged raw predictions, same as
+    /predict returns. `active` = newest logged reading is within ACTIVE_CADENCES x the device's
+    cadence; sensor/subtype pairs that were never triggered have no row and are simply absent
+    (a 'normal' status leaves no trace in the table)."""
+    dev = _device_or_404(iddev)
+    now = pd.Timestamp.now()  # naive local, same clock as created_at (see rul_features.data_age_minutes)
+    max_age_min = ACTIVE_CADENCES * dev["cadence_s"] / 60
+
+    results = []
+    for sensor, subtype in SUBTYPES:
+        recent = rul_store.get_predictions(iddev, sensor=sensor, subtype=subtype, limit=rul_smooth.SMOOTH_READINGS)
+        if recent.empty:
+            continue
+        s = rul_smooth.smooth_rul(recent, dev["session_break_min"]).iloc[-1]
+        age_min = (now - s["created_at"]).total_seconds() / 60
+        results.append({
+            "sensor": sensor, "subtype": subtype,
+            "as_of": _clean(s["created_at"]),
+            "age_minutes": round(age_min, 1),
+            "active": age_min <= max_age_min,
+            "current_value": _clean(s["current_value"]),
+            "band_progress": _clean(s["band_progress"]),
+            "predicted_rul_minutes": _clean(s["predicted_rul_minutes"]),
+            "rul_smooth_minutes": _clean(s["rul_smooth_min"]),
+            "eta": _clean(s["eta_hat"]), "eta_low": _clean(s["eta_low"]), "eta_high": _clean(s["eta_high"]),
+            "n_used": _clean(s["n_used"]),
+            "model_version": _clean(s["model_version"]),
+        })
+    return {"iddev": iddev, "server_time": now.isoformat(), "results": results}
+
+
+@app.get("/rul/{iddev}/history")
+def rul_history(iddev: int, sensor: Optional[str] = None, subtype: Optional[str] = None,
+                since: Optional[datetime] = None, limit: int = Query(500, ge=1, le=5000)):
+    """Read-only: the last `limit` logged predictions (oldest first), each with its smoothed RUL/ETA,
+    for the dashboard's trend chart. `since` is naive local time, e.g. 2026-10-01T00:00:00. The raw
+    `features` JSON is left out on purpose (bulky; read the sqlite file when tracing a jump)."""
+    dev = _device_or_404(iddev)
+    df = rul_store.get_predictions(iddev, sensor=sensor, subtype=subtype, since=since, limit=limit)
+    if df.empty:
+        return {"iddev": iddev, "rows": []}
+    df = rul_smooth.smooth_history(df, dev["session_break_min"]).sort_values("created_at")
+    cols = ["created_at", "sensor", "subtype", "current_value", "band_progress", "predicted_rul_minutes",
+            "rul_smooth_min", "eta_hat", "eta_low", "eta_high", "n_used", "model_version"]
+    rows = [{c: _clean(v) for c, v in rec.items()} for rec in df[cols].to_dict("records")]
+    return {"iddev": iddev, "rows": rows}
 
 
 @app.get("/drift/{iddev}")
